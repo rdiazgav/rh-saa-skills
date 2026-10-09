@@ -1,12 +1,11 @@
 ---
 name: antora-workshop
 description: >-
-  Creates a structured GitHub repository for Red Hat Scholars courseware workshops using
-  AsciiDoc and Antora, with progressive hands-on steps, collapsible verification blocks,
-  reset/undo sections, and a published documentation site. Use when the user asks to create
-  an Antora workshop, create an Antora courseware site, create a Red Hat Scholars tutorial,
-  or says something like "I need an Antora workshop for X", "create a hands-on lab",
-  "create a workshop repository", or "set up a training repo with Antora".
+  Creates a GitHub repo for Red Hat Scholars courseware workshops (AsciiDoc + Antora 3)
+  with progressive hands-on steps, collapsible verification blocks, reset sections and a
+  published site, for single-cluster (CRC, SNO) or multi-cluster setups. Use when asked
+  for an Antora workshop, courseware site or Red Hat Scholars tutorial, or to "create a
+  hands-on lab".
 ---
 
 # OpenShift Workshop (Red Hat Scholars Courseware)
@@ -19,6 +18,65 @@ of every step page.
 All content must be written in English. Use only Red Hat / OpenShift-native components
 when they cover the use case. Never include customer names, user names, or email addresses.
 
+Every boilerplate file you need is in [reference.md](reference.md). Do not depend on an
+external reference repository.
+
+---
+
+## Workflow
+
+Run the work in four phases. Do not skip a phase, and do not mark a phase done without
+evidence (command output, a report, or a passing check).
+
+1. **Context gathering** (no cluster changes). Collect requirements in a gitignored `t/`
+   folder: topic, target audience, topology (see below), product versions, which
+   features each step demonstrates, and links to the official docs for each feature.
+   Verify every product fact (API versions, field names, operator namespaces, defaults)
+   against `docs.redhat.com` before it reaches a manifest.
+2. **Build and execute**. Write manifests and pages, then run the full workshop end to
+   end against a live cluster exactly as a participant would, recording wall-clock time
+   for every sub-step. Fix what fails, then re-run the affected steps.
+3. **Reset validation**. Run every `== Reset` section, confirm the cluster is clean (no
+   leftover namespaces, CRs, RBAC, subscriptions or finalizers), then re-run the whole
+   workshop from that clean state. Anything that only worked the first time is a bug.
+4. **Render and publish**. Build the site, run `scripts/check-site.sh` (see
+   [reference.md](reference.md)), open the rendered pages, then push and confirm the CI
+   run and the published URL.
+
+If the session supports subagents (Claude Code), the companion agents in this repository
+under `agents/antora-workshop/` split these phases across specialized workers. See
+**Claude Code subagents** below.
+
+---
+
+## Topology
+
+Decide the topology in phase 1 and keep it consistent everywhere (pages, `myenv.sh`,
+`_attributes.adoc`, `AGENTS.md`). The templates use attributes so pages do not hard-code
+context names.
+
+| Topology | Typical environment | Context names | `00-setup.adoc` options |
+|---|---|---|---|
+| Single cluster | OpenShift Local (CRC), SNO, one lab cluster | `crc` (or one name of your choice) | Option A: local CRC from scratch. Option B: an existing cluster |
+| Multi-cluster | Hub + managed clusters (ACM, Submariner, etc.) | `hub`, `cluster-a`, `cluster-b` | Option A: pre-provisioned clusters from scratch. Option B: quick login |
+
+Remove anything that does not apply. A single-cluster workshop must not mention hub,
+managed clusters, or cluster mapping tables.
+
+### OpenShift Local (CRC) notes
+
+When the workshop targets CRC, document these in `00-setup.adoc`:
+
+- Resources: `crc config set memory 16384` and `crc config set cpus 6` as a starting point
+  when the workshop uses monitoring or operators. Adjust upward for heavier products.
+- Monitoring is off by default: `crc config set enable-cluster-monitoring true` before
+  `crc start` if any step uses Prometheus, alerts, or metrics-based triggers. Enable user
+  workload monitoring in-cluster if steps scrape user workloads.
+- Credentials: `crc console --credentials` prints the `kubeadmin` login command.
+- Scrape intervals on CRC are long (cAdvisor metrics every ~60 seconds). Size PromQL
+  `rate()` windows to at least twice the scrape interval (e.g. `[2m]`), or queries return
+  empty results silently.
+
 ---
 
 ## Repository Structure
@@ -27,23 +85,21 @@ when they cover the use case. Never include customer names, user names, or email
 <workshop-slug>/
 ├── README.adoc                          # Repo overview, local dev, structure table
 ├── .gitignore
-├── AGENTS.md                                # AI conventions (Cursor, Codex, Copilot)
-├── CLAUDE.md                                # Claude Code entry point (imports AGENTS.md)
-├── Dockerfile                           # Antora build + httpd container
-├── package.json                         # npm dependencies (Antora, Gulp, BrowserSync)
-├── gulpfile.babel.js                    # Gulp tasks for dev server
+├── AGENTS.md                            # AI conventions (Cursor, Codex, Copilot, Claude Code)
+├── CLAUDE.md                            # Claude Code entry point (imports AGENTS.md)
+├── Dockerfile                           # Antora build + UBI httpd container
+├── package.json                         # Pinned npm dependencies (Antora 3)
+├── package-lock.json                    # Committed: CI installs exactly these versions
 ├── site.yml                             # Antora playbook (production)
 ├── dev-site.yml                         # Antora playbook (local dev)
-├── site.sh                              # Shell shortcut for antora build
+├── site.sh                              # Shell shortcut for a clean production build
+├── scripts/
+│   └── check-site.sh                    # Post-build checks (collapsibles, placeholders, em dashes)
 ├── supplemental-ui/                     # Custom UI overrides
 │   ├── .nojekyll
 │   ├── ui.yml
-│   ├── img/favicon.ico
 │   └── partials/footer-nav.hbs
-├── lib/                                 # Asciidoctor extensions
-│   ├── tab-block.js
-│   └── remote-include-processor.js
-├── .github/workflows/docs.yml           # CI: build Antora + deploy to GitHub Pages
+├── .github/workflows/docs.yml           # CI: build, check, deploy to GitHub Pages
 ├── documentation/                       # Antora component source
 │   ├── antora.yml
 │   └── modules/ROOT/
@@ -57,30 +113,11 @@ when they cover the use case. Never include customer names, user names, or email
 │           ├── 02-<step-name>.adoc      # Builds on step 01
 │           └── ...                      # Additional steps
 ├── 00-<step-zero-dir>/                  # YAML manifests for step 0 (baseline)
-│   ├── namespace.yaml
-│   ├── deployment.yaml
-│   ├── service.yaml
-│   └── route.yaml
+│   └── *.yaml
 ├── 01-<step-name>/                      # YAML manifests for step 1
 │   └── *.yaml
-├── 02-<step-name>/                      # YAML manifests for step 2
-│   └── *.yaml
 ├── kustomize/                           # Optional: Kustomize base + overlays
-│   ├── base/
-│   │   ├── kustomization.yaml
-│   │   ├── deployment.yaml
-│   │   ├── service.yaml
-│   │   └── route.yaml
-│   └── overlays/production/
-│       └── kustomization.yaml
 ├── setup/                               # Optional: Terraform + post-install (internal)
-│   ├── README.adoc
-│   ├── main.tf
-│   ├── variables.tf
-│   ├── outputs.tf
-│   ├── providers.tf
-│   ├── terraform.tfvars.example
-│   └── post-install.sh
 └── myenv.sh                             # Personal env file (gitignored)
 ```
 
@@ -95,19 +132,43 @@ and is not part of the workshop itself.
 
 ## Documentation Framework: Antora
 
-The courseware site uses Antora 2.x with the Red Hat Scholars UI bundle
-(`rhd-tutorial-ui` v0.1.10). Copy these boilerplate files verbatim from the reference
-workshop (`multi-cluster-app-distribution-demo`), then adapt URLs and titles:
+The courseware site uses **Antora 3** (`@antora/cli` + `@antora/site-generator`) with the
+Red Hat Scholars UI bundle (`rhd-tutorial-ui` v0.1.10).
 
-- `gulpfile.babel.js`, `lib/tab-block.js`, `lib/remote-include-processor.js`
-- `supplemental-ui/` (update footer links), `site.sh`, `Dockerfile`
-- `.github/workflows/docs.yml`
+Do not use Antora 2.x. Antora 2.x ships `asciidoctor.js` 1.5.9, which does not support
+`[%collapsible]` (added in Asciidoctor 2.0.6). The pages look correct in the source, but
+every verification block renders as a plain, always-open "Example N." block.
 
-Create `antora.yml`, `site.yml`, `dev-site.yml`, and `package.json` from templates
-in [reference.md](reference.md).
+Create every boilerplate file from [reference.md](reference.md): `package.json`,
+`site.yml`, `dev-site.yml`, `antora.yml`, `site.sh`, `Dockerfile`, `supplemental-ui/`,
+`scripts/check-site.sh`, and `.github/workflows/docs.yml`.
 
-Local dev: `npm install && npm run dev` (live-reload at http://localhost:3000).
-Build: `npx antora site.yml` (output in `gh-pages/`).
+- Install: `npm install` once to create `package-lock.json`, then commit the lockfile.
+- Local dev: `npm run dev` serves `gh-pages/` at http://localhost:3000. Run `npm run watch`
+  in a second terminal to rebuild on changes.
+- Build: `npm run build` (output in `gh-pages/`), then `npm run check`.
+
+No AsciiDoc extensions are required. If a workshop genuinely needs tabbed content, use the
+official `@asciidoctor/tabs` extension (see the optional section in
+[reference.md](reference.md)). Do not copy legacy `lib/tab-block.js` or
+`lib/remote-include-processor.js`; they target the Asciidoctor 1.5 API.
+
+---
+
+## Resolving Placeholders
+
+Templates use `<...>` placeholders. Resolve every one of them before the first commit:
+
+- `<github-user>` and `<repo-name>`: take them from `git remote get-url origin`. If the
+  repository has no remote yet, ask the user. Never guess.
+- `<workshop-slug>`: the repository name in lowercase kebab-case.
+- `<Workshop Title>`: from the user's request.
+
+Before finishing, `scripts/check-site.sh` must report no unresolved placeholders. A
+published site with `<github-user>` in the footer or README is a defect.
+
+The only placeholders allowed in the final repository are `${VARIABLE}` tokens in YAML
+files that are filled with `envsubst` and exported in `00-setup.adoc`.
 
 ---
 
@@ -124,8 +185,9 @@ Left-nav tree using `xref:` with `#anchor` targets for sub-sections.
 
 ### index.adoc
 
-Landing page with `:page-layout: home`, tile grid (`[.tiles.browse]`), and
-environment table. See [reference.md](reference.md) for all page templates.
+Landing page with a tile grid (`[.tiles.browse]`) and an environment table. Do not set
+`:page-layout: home`: `rhd-tutorial-ui` has no `home` layout and Antora logs a warning and
+falls back to the default. See [reference.md](reference.md) for all page templates.
 
 ---
 
@@ -142,6 +204,9 @@ Every numbered sub-step must start with bold What and Why:
 
 *Why:* One sentence explaining why this step matters.
 ```
+
+Use `==` for page sections (`== Steps to Apply`, `== Reset`) and `===` for numbered
+sub-steps on every page, including `00-setup.adoc`. Do not mix levels between pages.
 
 ### Timing annotations
 
@@ -160,7 +225,7 @@ icon:clock[] ~1 minute (CR accepted in ~10s, pods ready in ~45s)
 *Why:* This is the management plane for the product.
 ```
 
-Timings should be measured by running the full workshop end-to-end and recording
+Timings must be measured by running the full workshop end-to-end and recording
 wall-clock duration for each sub-step. Include a parenthetical breakdown when the wait
 has distinct phases (e.g., CR creation vs pod readiness vs API warmup). Typical timings
 to annotate:
@@ -174,6 +239,13 @@ to annotate:
 Add an `IMPORTANT:` admonition for background processes that take 15+ minutes (like
 database hydration or large index builds) so participants know to start setup early.
 
+### Demo-friendly timing
+
+Default controller timings are tuned for production, not for a 10-minute lab. When a step
+waits on a controller (autoscaler cooldowns, HPA scale-down stabilization, sync intervals,
+reconcile periods), shorten the relevant setting in the workshop manifest, add a YAML
+comment explaining why, and add a `NOTE:` telling participants the production default.
+
 ### Console input/output blocks
 
 Commands the user should run:
@@ -182,7 +254,7 @@ Commands the user should run:
 [.console-input]
 [source,bash,subs="+macros,+attributes"]
 ----
-oc apply -f 01-step/resource.yaml --context cluster-a
+oc apply -f 01-step/resource.yaml --context {context}
 ----
 ```
 
@@ -199,7 +271,9 @@ my-pod     1/1     Running   0          30s
 
 ### Collapsible verification blocks
 
-Every sub-step must have a verification block:
+Every numbered sub-step must have a verification block, including setup steps such as
+cloning the repository or exporting variables (verify with `git remote -v`, `env | grep`,
+etc.). When a step is split into sub-parts (4a, 4b), each sub-part needs its own block.
 
 ```asciidoc
 .Verify: Description of what to check
@@ -208,7 +282,7 @@ Every sub-step must have a verification block:
 [.console-input]
 [source,bash,subs="+macros,+attributes"]
 ----
-oc get pods -n demo-app --context cluster-a
+oc get pods -n demo-app --context {context}
 ----
 
 [.console-output]
@@ -219,6 +293,9 @@ my-pod     1/1     Running   0          30s
 ----
 ====
 ```
+
+The source being correct is not enough: confirm the rendered HTML contains a `<details>`
+element for every `[%collapsible]` block. `scripts/check-site.sh` does this.
 
 ### Horizontal rules between steps
 
@@ -283,6 +360,9 @@ Do NOT add screenshots for:
   that matters to the narrative.
 - Login screens, confirmation dialogs, or generic "success" banners.
 
+If the session has no browser tools, skip screenshots and say so in the final report.
+Never substitute images from other sources.
+
 ### Capture workflow
 
 1. **Navigate** to the target page using your browser tools with the product's
@@ -324,6 +404,12 @@ When running this skill in Cursor, the capture workflow uses these specific tool
    e.g. `/var/folders/.../cursor/screenshots/`).
 5. Copy the resulting file to `documentation/modules/ROOT/images/`.
 
+#### Claude Code-specific example
+
+In Claude Code, a Playwright MCP server provides the browser tools. It needs Node.js 18
+or later in the shell that launched Claude Code (open a new terminal after switching
+Node versions with `nvm`, or the MCP server fails to connect).
+
 ### Naming convention
 
 ```
@@ -362,9 +448,10 @@ references for participants to stumble over during a live session.
 
 ## CLI Conventions
 
-- Every `oc` command must include an explicit `--context` flag (e.g. `hub`, `cluster-a`,
-  `cluster-b`). Never use `oc login` inside step pages.
-- Context setup is done once in `00-setup.adoc`.
+- Every `oc` command must include an explicit `--context` flag. Use the attribute
+  (`--context {context}`, `--context {hub-context}`) in pages so context names live in
+  `_attributes.adoc` only. Never use `oc login` inside step pages.
+- Context setup is done once in `00-setup.adoc` (and in `myenv.sh`).
 - YAML files with `${VARIABLE}` placeholders must be applied via:
   ```bash
   envsubst < file.yaml | oc apply --context <ctx> -f -
@@ -392,12 +479,52 @@ references for participants to stumble over during a live session.
 
 ---
 
+## RBAC and Least Privilege
+
+Workshops teach patterns that participants copy into production. Model least privilege:
+
+- Default to a namespaced `Role` + `RoleBinding`. Use a `ClusterRole` or
+  `ClusterRoleBinding` only when the resource is cluster-scoped or the product
+  documentation requires it, and say why in a YAML comment.
+- List exact verbs, resources and subresources (e.g. `create` on `serviceaccounts/token`
+  for bound service account tokens). Do not grant `*`.
+- Prefer tenant-scoped endpoints when a product offers both (e.g. the thanos-querier
+  tenancy port `9092` with a namespace parameter instead of the cluster-wide `9091`).
+- Every RBAC step's verification block proves the permission with
+  `oc auth can-i <verb> <resource>[/<subresource>] -n <ns> --as=system:serviceaccount:<ns>:<sa> --context <ctx>`.
+- Use bound, short-lived service account tokens instead of long-lived token secrets
+  when the product supports them.
+
+---
+
+## Troubleshooting Rules
+
+When a step fails during execution:
+
+- Capture the literal error and the cluster state (`oc get`, `oc describe`, logs, events)
+  before changing anything.
+- Form at least two hypotheses and test each with evidence.
+- Never conclude that a feature is unsupported or a product limitation until every
+  permission involved has been verified with `oc auth can-i` and the exact feature has
+  been checked in the official documentation for the installed version. Missing RBAC,
+  wrong ports, wrong namespaces and environment timing (scrape intervals, stabilization
+  windows) are far more common than product bugs.
+- Distinguish waiting from failing: an operator install or a scale event that is still in
+  progress is not an error until a reasonable timeout passes.
+- Record the root cause as an inline `NOTE:` when participants could hit it too.
+
+---
+
 ## YAML Conventions
 
 - Every YAML file starts with a comment block: `# filename.yaml` + `# Purpose: ...`
 - Use `app.kubernetes.io/part-of: <app-name>` label consistently.
 - Include resource requests/limits and readiness/liveness probes on Deployments.
 - YAML files live in step directories and are referenced from AsciiDoc pages.
+- Comment any non-default value chosen for the workshop (shortened timers, rate windows,
+  tenancy ports) with the reason.
+- Validate every file with `oc apply --dry-run=server -f <file> --context <ctx>` (pipe
+  through `envsubst` first when the file has `${VARIABLE}` tokens).
 
 ---
 
@@ -434,24 +561,32 @@ undo everything from that step and return to the state before it. Key rules:
 5. **Preserve cloud credentials**: Don't delete cloud credential secrets that are
    expensive to recreate.
 6. **Explain the order**: Add a brief sentence explaining why the order matters.
+7. **Validated**: Every Reset section has been run in phase 3 and followed by a clean
+   re-run of the step.
 
 ---
 
 ## 00-setup.adoc Page
 
-The setup page is special. It provides two paths:
+The setup page is special. It provides two paths that depend on the topology (see
+**Topology**):
 
-- **Option A** - Using pre-provisioned clusters (Demo Platform): full setup from scratch
-  including gathering credentials, importing clusters, installing operators.
-- **Option B** - Quick login: clusters already configured by someone else.
+- **Multi-cluster**: Option A - pre-provisioned clusters (Demo Platform), full setup from
+  scratch including gathering credentials, importing clusters, installing operators.
+  Option B - quick login to clusters already configured by someone else.
+- **Single cluster**: Option A - local OpenShift Local (CRC) from scratch, including
+  resource and monitoring settings. Option B - an existing cluster with the operators
+  already installed.
 
 Must include:
 1. Prerequisites (tools, versions, permissions)
-2. Cluster mapping table (which cluster plays which role)
+2. Cluster mapping table (multi-cluster only)
 3. Login and context rename instructions
 4. Operator installation and verification
 5. Workshop variable exports with a variable table
 6. Clone repository step
+
+Every numbered sub-step on this page also has What/Why and a collapsible Verify block.
 
 ---
 
@@ -462,8 +597,10 @@ Must include:
 - Prefer `registry.access.redhat.com` or `registry.redhat.io` images over Docker Hub.
 - Use Red Hat / OpenShift-native components when they cover the use case.
 - Mention Red Hat products because they fit the solution, not to promote them.
-- Do not use em dashes (`-`). Use regular dashes (`-`) instead.
+- Do not use em dashes (the long dash, Unicode U+2014) or en dashes (U+2013). Use a
+  regular hyphen (`-`) instead. `scripts/check-site.sh` fails on them.
 - All doc links must point to `docs.redhat.com` or `docs.openshift.com` - no placeholders.
+  Upstream project docs may inform research but are not linked from the pages.
 
 ---
 
@@ -479,6 +616,7 @@ admonitions inline rather than separate pages. Common differences:
   Document which profiles, APIs, or features are node-only on managed platforms.
 - **Managed clusters**: May use `cluster-admin` instead of `kubeadmin` for
   authentication. The `myenv.sh` login pattern works the same way.
+- **OpenShift Local (CRC)**: see **Topology > OpenShift Local (CRC) notes**.
 - **Operator versions**: Operator behavior and API endpoints can change between
   versions. When a workshop documents API calls, note the tested version in
   `_attributes.adoc` and call out any version-specific behavior (e.g. an endpoint
@@ -509,6 +647,9 @@ These should cover:
   `-sk` for `curl`) with a note that production should trust the CA instead.
 - **Image rescans**: If images are deployed before a scanner database finishes loading,
   they may show zero results. Document how to trigger a rescan or how long to wait.
+- **Metrics latency**: Metrics-driven steps (autoscaling, alerts, dashboards) depend on
+  scrape intervals. Tell participants how long to wait before the first data point and
+  give a query they can run to confirm data exists.
 
 ---
 
@@ -516,11 +657,16 @@ These should cover:
 
 Create two files in the workshop root so that AI tools follow the project conventions:
 
-- **AGENTS.md**: Contains the full workshop conventions (repository purpose, structure,
-  AsciiDoc formatting, CLI conventions, content rules, and YAML conventions). This file
-  is read automatically by Cursor, Codex, Copilot, and most other AI coding tools.
-- **CLAUDE.md**: A one-line file containing `@AGENTS.md` that tells Claude Code to
-  import the shared conventions file.
+- **AGENTS.md**: Contains the full workshop conventions (repository purpose, topology,
+  structure, AsciiDoc formatting, CLI conventions, RBAC rules, content rules, and YAML
+  conventions). This file is read automatically by Cursor, Codex, Copilot, and most other
+  AI coding tools. Keep it in sync with the repository: when a step's resources change
+  (e.g. a ClusterRoleBinding replaced by a namespaced RoleBinding), update `AGENTS.md` in
+  the same commit.
+- **CLAUDE.md**: Starts with `@AGENTS.md` so Claude Code imports the shared conventions.
+  When the companion subagents are installed, append the orchestration section from
+  [reference.md](reference.md). Claude Code-specific instructions go here, not in
+  `AGENTS.md`.
 
 See [reference.md](reference.md) for both templates.
 
@@ -529,7 +675,10 @@ See [reference.md](reference.md) for both templates.
 ## .gitignore
 
 Must cover: `.DS_Store`, `myenv.sh`, `t/`, Terraform state files (if `setup/` exists),
-`node_modules/`, `.cache/`, `gh-pages/`, `package-lock.json`.
+`node_modules/`, `.cache/`, `gh-pages/`.
+
+Do NOT ignore `package-lock.json`. CI runs `npm ci`, which requires the lockfile, and the
+lockfile is what guarantees CI builds with the same Antora version you tested locally.
 
 Also gitignore any environment-specific artifacts generated during the workshop that
 contain secrets or are environment-bound:
@@ -551,34 +700,32 @@ See [reference.md](reference.md) for the full template.
 `myenv.sh` is a personal, gitignored shell script that each workshop participant creates
 to store their environment-specific credentials and cluster endpoints. Running
 `source myenv.sh` authenticates to every cluster and sets up the named `oc` contexts
-used throughout the workshop. It is the single place where sensitive values live — no
+used throughout the workshop. It is the single place where sensitive values live - no
 credentials should appear in any other file.
 
-### Structure
-
-The file follows this exact pattern:
+### Structure (multi-cluster)
 
 ```bash
-# Console URLs (for quick reference — not used by scripts)
+# Console URLs (for quick reference - not used by scripts)
 # Hub console:       https://console-openshift-console.apps.<hub-domain>
 # Cluster A console: https://console-openshift-console.apps.<cluster-a-domain>
 # Cluster B console: https://console-openshift-console.apps.<cluster-b-domain>
 
-# ── Workshop variables (used by envsubst in YAML manifests) ──────────────
+# -- Workshop variables (used by envsubst in YAML manifests) --
 export HUB_API_URL="https://api.<hub-domain>:6443"
 export CLUSTER_A_API_URL="https://api.<cluster-a-domain>:6443"
 export CLUSTER_B_API_URL="https://api.<cluster-b-domain>:6443"
 
 export GIT_REPO_URL="https://github.com/<org>/<repo>.git"
-export REMOTE_INGRESS_IP="<set after Submariner — see step 02>"
+export REMOTE_INGRESS_IP="<set after Submariner - see step 02>"
 # Add any additional workshop variables here
 
-# ── Context cleanup (idempotent) ─────────────────────────────────────────
+# -- Context cleanup (idempotent) --
 oc config delete-context hub 2>/dev/null
 oc config delete-context cluster-a 2>/dev/null
 oc config delete-context cluster-b 2>/dev/null
 
-# ── Login + rename contexts ──────────────────────────────────────────────
+# -- Login + rename contexts --
 oc login "$HUB_API_URL" --username <user> --password <password>
 oc config rename-context "$(oc config current-context)" hub
 
@@ -589,6 +736,27 @@ oc login "$CLUSTER_B_API_URL" --username <user> --password <password>
 oc config rename-context "$(oc config current-context)" cluster-b
 ```
 
+### Structure (single cluster, OpenShift Local)
+
+```bash
+# Console: https://console-openshift-console.apps-crc.testing
+
+# -- Workshop variables (used by envsubst in YAML manifests) --
+export CLUSTER_API_URL="https://api.crc.testing:6443"
+export WORKSHOP_NAMESPACE="<namespace>"
+# Add any additional workshop variables here
+
+# -- Context cleanup (idempotent) --
+oc config delete-context crc 2>/dev/null
+
+# -- Login + rename context (password from: crc console --credentials) --
+oc login "$CLUSTER_API_URL" --username kubeadmin --password <password>
+oc config rename-context "$(oc config current-context)" crc
+```
+
+The `<...>` values in `myenv.sh` are filled by each participant and are the only
+angle-bracket placeholders allowed, because the file is never committed.
+
 ### Key rules
 
 1. **Gitignored**: `myenv.sh` must be listed in `.gitignore`. It contains passwords.
@@ -598,36 +766,55 @@ oc config rename-context "$(oc config current-context)" cluster-b
    go at the top, before any `oc` commands.
 4. **Context cleanup before login**: Delete existing contexts before logging in so the
    script is idempotent. Running `source myenv.sh` twice must not fail.
-5. **Login + rename pattern**: Each cluster follows the same three-line pattern:
-   `oc login` → `oc config rename-context "$(oc config current-context)" <name>`.
-   This gives deterministic context names (`hub`, `cluster-a`, `cluster-b`) regardless
-   of the auto-generated context string.
+5. **Login + rename pattern**: Each cluster follows the same pattern:
+   `oc login` then `oc config rename-context "$(oc config current-context)" <name>`.
+   This gives deterministic context names regardless of the auto-generated context string.
 6. **Match 00-setup.adoc**: The context names and variable names in `myenv.sh` must
-   exactly match what `00-setup.adoc` documents. The setup page tells participants
-   *what* to put in `myenv.sh`; the file itself is their personal copy.
-7. **Adapt to the workshop**: If the workshop uses different or fewer clusters, adjust
-   the contexts accordingly (e.g. a single-cluster workshop only needs one login block).
-   Add or remove `export` lines to match the variables table in `00-setup.adoc`.
+   exactly match what `00-setup.adoc` and `_attributes.adoc` document. The setup page
+   tells participants *what* to put in `myenv.sh`; the file itself is their personal copy.
+7. **Adapt to the workshop**: Add or remove `export` lines to match the variables table in
+   `00-setup.adoc`.
 
 ---
 
 ## GitHub Actions CI
 
-Uses `kameshsampath/antora-site-action@master` to build and
-`JamesIves/github-pages-deploy-action@v4` to deploy to `gh-pages` branch.
-See [reference.md](reference.md) for the exact workflow YAML.
+The workflow installs exactly the locked dependencies with `npm ci`, builds the site with
+Antora 3, runs `scripts/check-site.sh`, and only then deploys `gh-pages/` with
+`JamesIves/github-pages-deploy-action@v4`. A failed check blocks the deploy, so a broken
+render never reaches the published site.
+
+Do not use `kameshsampath/antora-site-action@master`: it pulls an unpinned Antora version,
+so CI can build with a different toolchain than the one you tested.
+
+See [reference.md](reference.md) for the exact workflow YAML. After the first push,
+confirm the run with `gh run watch` and check the published URL.
 
 ---
 
-## Reference Workshop
+## Claude Code Subagents
 
-When creating a new workshop, use the boilerplate templates in
-[reference.md](reference.md). Copy these files verbatim and adapt only the
-placeholders marked with `<...>`:
+This repository ships optional companion subagents in `agents/antora-workshop/`. The
+install script links them into `~/.claude/agents/`. Each one has a fixed model and effort
+level, so expensive reasoning is used only where a wrong conclusion would propagate:
 
-- `gulpfile.babel.js`, `lib/`, `supplemental-ui/`, `site.sh`, `Dockerfile`
-- Adapt `site.yml`, `dev-site.yml`, `antora.yml`, `package.json`
-- Update `supplemental-ui/partials/footer-nav.hbs` with new repo URLs
+| Agent | Model | Role |
+|---|---|---|
+| `workshop-docs-researcher` | Sonnet | Verifies product facts against official docs |
+| `workshop-architect` | Opus | Topology, RBAC, endpoints, least privilege |
+| `workshop-manifest-writer` | Sonnet | YAML manifests, dry-run validated |
+| `workshop-module-writer` | Sonnet | AsciiDoc pages |
+| `workshop-executor` | Sonnet | Runs steps with timing; never diagnoses |
+| `workshop-troubleshooter` | Opus | Root cause of failures |
+| `workshop-reset-validator` | Sonnet | Reset + clean re-run |
+| `workshop-reviewer` | Opus | Cross-checks reports, pages and manifests |
+| `workshop-sweeper` | Haiku | Placeholders, broken xrefs, convention greps |
+| `workshop-style-editor` | Sonnet | Final prose pass (uses the `humanizer` skill if installed) |
+| `workshop-publisher` | Sonnet | Build, checks, CI, GitHub Pages |
+
+When they are installed, run the main session with `claude --model opusplan` and add the
+orchestration section from [reference.md](reference.md) to the workshop's `CLAUDE.md`.
+When they are not installed, follow the same phases in a single session.
 
 ---
 
@@ -636,29 +823,37 @@ placeholders marked with `<...>`:
 Before finishing:
 
 - [ ] All AsciiDoc pages are in English
-- [ ] `_attributes.adoc` defines all version attributes used across pages
+- [ ] Topology decided and consistent across pages, `_attributes.adoc`, `myenv.sh`, `AGENTS.md`
+- [ ] `_attributes.adoc` defines all version and context attributes used across pages
 - [ ] Every step page includes `\include::_attributes.adoc[]` on line 2
-- [ ] Every numbered sub-step has *What*/*Why* bold pairs
-- [ ] Every sub-step has a `.Verify:` collapsible block
+- [ ] Every numbered sub-step (including `00-setup.adoc` and sub-parts like 4a/4b) has *What*/*Why* bold pairs
+- [ ] Every numbered sub-step has a `.Verify:` collapsible block
 - [ ] `'''` horizontal rules separate sub-steps
 - [ ] Every `oc` command has an explicit `--context` flag
 - [ ] No `oc login` inside step pages (only in `00-setup.adoc`)
 - [ ] YAML files with `${VARIABLE}` use `envsubst` in apply commands
-- [ ] Every YAML file has a comment header (filename + purpose)
+- [ ] Every YAML file has a comment header (filename + purpose) and passes a server dry-run
+- [ ] RBAC is least privilege and every permission is proven with `oc auth can-i`
 - [ ] Every step page ends with a `== Reset` section
-- [ ] Reset commands use `--ignore-not-found` and reverse order
+- [ ] Reset commands use `--ignore-not-found` and reverse order, and were validated with a clean re-run
+- [ ] Timing annotations come from a real end-to-end run
 - [ ] `nav.adoc` lists all pages with anchor-level sub-items
-- [ ] `index.adoc` has tile grid linking to all steps
-- [ ] `00-setup.adoc` has Options A and B, variable table, and clone step
+- [ ] `index.adoc` has tile grid linking to all steps and no `:page-layout: home`
+- [ ] `00-setup.adoc` has Options A and B for the chosen topology, variable table, and clone step
 - [ ] Steps are progressive (each builds on the previous)
 - [ ] "What This Solves" and "What This Does NOT Solve" tables present
 - [ ] Official Documentation section links to `docs.redhat.com`
 - [ ] Alternatives Considered table is neutral (no sales language)
 - [ ] No em dashes, no customer names, no placeholder doc links
-- [ ] `AGENTS.md` and `CLAUDE.md` created for the project
-- [ ] `.github/workflows/docs.yml` configured
+- [ ] No unresolved `<...>` placeholders outside `myenv.sh`
+- [ ] `AGENTS.md` and `CLAUDE.md` created and in sync with the repository
+- [ ] `package.json` uses Antora 3 and `package-lock.json` is committed
+- [ ] `.github/workflows/docs.yml` uses `npm ci` and runs `scripts/check-site.sh` before deploy
+- [ ] `npm run build && npm run check` passes locally
+- [ ] Rendered pages opened in a browser: Verify blocks collapse, nav works, copy buttons work
+- [ ] CI run green and published URL loads
 - [ ] `site.yml` and `dev-site.yml` configured with correct URLs
-- [ ] `.gitignore` covers all generated/sensitive files
+- [ ] `.gitignore` covers all generated/sensitive files and does not ignore `package-lock.json`
 - [ ] Screenshots captured from the live UI via the AI's browser (no fabricated images)
 - [ ] Screenshots placed only where UI navigation is ambiguous or a new section is introduced
 - [ ] Screenshot filenames use `<NN>-<descriptive-name>.png` convention
