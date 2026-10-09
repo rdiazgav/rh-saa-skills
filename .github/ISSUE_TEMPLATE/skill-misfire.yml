@@ -9,6 +9,7 @@ body:
       label: Which skill?
       options:
         - antora-workshop
+        - antora-workshop subagents (Claude Code)
     validations:
       required: true
   - type: dropdown

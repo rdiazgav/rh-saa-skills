@@ -3,7 +3,17 @@ name: lint
 on:
   pull_request:
     paths:
-      - "skills/**/SKILL.md"
+      - "skills/**"
+      - "agents/**"
+      - "install.sh"
+  push:
+    branches:
+      - main
+      - master
+    paths:
+      - "skills/**"
+      - "agents/**"
+      - "install.sh"
 
 jobs:
   validate-frontmatter:
@@ -68,3 +78,83 @@ jobs:
 
           echo ""
           echo "All skills passed validation"
+
+  validate-agents:
+    name: Validate Claude Code subagent frontmatter
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Check agents
+        run: |
+          errors=0
+          shopt -s nullglob
+          declare -A seen
+          for agent in agents/*/*.md; do
+            echo "Checking $agent..."
+            if [[ "$(head -1 "$agent")" != "---" ]]; then
+              echo "  ERROR: frontmatter must start on line 1"
+              errors=$((errors + 1))
+              continue
+            fi
+            fm=$(sed -n '2,/^---$/p' "$agent" | sed '$d')
+
+            name=$(echo "$fm" | sed -n 's/^name: *//p')
+            if [[ -z "$name" ]]; then
+              echo "  ERROR: missing 'name'"
+              errors=$((errors + 1))
+            elif [[ "$name" == *:* || "$name" == -* ]]; then
+              echo "  ERROR: name '$name' must not contain ':' or start with '-'"
+              errors=$((errors + 1))
+            elif [[ -n "${seen[$name]:-}" ]]; then
+              echo "  ERROR: duplicate name '$name' (also in ${seen[$name]})"
+              errors=$((errors + 1))
+            else
+              seen[$name]="$agent"
+              echo "  name: OK ($name)"
+            fi
+
+            if ! echo "$fm" | grep -qE '^description: *\S'; then
+              echo "  ERROR: missing 'description'"
+              errors=$((errors + 1))
+            fi
+
+            model=$(echo "$fm" | sed -n 's/^model: *//p')
+            if [[ -n "$model" && ! "$model" =~ ^(sonnet|opus|haiku|fable|inherit|claude-[a-z0-9.-]+)$ ]]; then
+              echo "  ERROR: unknown model '$model'"
+              errors=$((errors + 1))
+            fi
+
+            effort=$(echo "$fm" | sed -n 's/^effort: *//p')
+            if [[ -n "$effort" && ! "$effort" =~ ^(low|medium|high|xhigh|max)$ ]]; then
+              echo "  ERROR: unknown effort '$effort'"
+              errors=$((errors + 1))
+            fi
+          done
+
+          if [[ $errors -gt 0 ]]; then
+            echo ""
+            echo "Found $errors error(s)"
+            exit 1
+          fi
+          echo ""
+          echo "All agents passed validation"
+
+  style:
+    name: Check style rules in skills and agents
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: No em dashes or en dashes
+        run: |
+          if grep -rn -e $'\xe2\x80\x94' -e $'\xe2\x80\x93' skills/ agents/; then
+            echo "ERROR: replace em/en dashes with a regular hyphen"
+            exit 1
+          fi
+          echo "OK"
+
+      - name: install.sh syntax
+        run: bash -n install.sh

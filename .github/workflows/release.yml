@@ -24,6 +24,12 @@ jobs:
             echo "Packaging $skill_name..."
             (cd skills && zip -r "../dist/${skill_name}.zip" "$skill_name/")
           done
+          for agents_dir in agents/*/; do
+            [ -d "$agents_dir" ] || continue
+            group=$(basename "$agents_dir")
+            echo "Packaging Claude Code agents for $group..."
+            (cd agents && zip -r "../dist/${group}-agents.zip" "$group/")
+          done
           ls -la dist/
 
       - name: Create GitHub Release
